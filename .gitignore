@@ -1,0 +1,7 @@
+seed.local.json
+*.local.*
+make_seed.py
+d3-2026/icon-512.png
+.DS_Store
+__pycache__/
+firestore.rules
