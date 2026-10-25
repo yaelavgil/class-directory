@@ -44,7 +44,7 @@ def build_dir(d):
     out = ROOT / d['id']
     out.mkdir(exist_ok=True)
     bg, accent = COLORS.get(d.get('color', 'sky'), COLORS['sky'])
-    title = f"דף קשר · {d['title']}"
+    title = f"דף קשר · {d['title'] if d['title'].startswith('כיתה') else 'כיתה ' + d['title']}"
     short = short_of(d)
     desc = f"{d.get('year', '')} · טלפונים, כתובות וימי הולדת של ילדי הכיתה. הכניסה להורים ולילדי הכיתה בלבד.".strip(' ·')
     (out / 'index.html').write_text(fill(tpl('page.html'),
@@ -53,7 +53,7 @@ def build_dir(d):
 
     # WhatsApp / social preview
     png = out / 'og.png'
-    shoot(fill(tpl('og.html'), BG=bg, TITLE=escape(d['title']), YEAR=escape(d.get('year', ''))), png, 1200, 630)
+    shoot(fill(tpl('og.html'), BG=bg, TITLE=escape(d['title'] if d['title'].startswith('כיתה') else 'כיתה ' + d['title']), YEAR=escape(d.get('year', ''))), png, 1200, 630)
     Image.open(png).convert('RGB').save(out / 'og.jpg', quality=88)
     png.unlink()
 
@@ -71,12 +71,12 @@ def build_dir(d):
     print('built', d['id'])
 
 
-def build_root():
+def build_root(first):
     (ROOT / 'index.html').write_text(fill(tpl('page.html'),
         TITLE='דפי קשר', DESC='דפי קשר לכיתות: טלפונים, כתובות וימי הולדת. הכניסה למורשים בלבד.', URL=BASE_URL, VER=VER,
         SHORT_TITLE='דפי קשר', BG=COLORS['sky'][0], BASE='./', DIR_JSON='null')
-        .replace('og.jpg', 'd3-2026/og.jpg').replace('icon.svg', 'd3-2026/icon.svg')
-        .replace('favicon-32.png', 'd3-2026/favicon-32.png').replace('apple-touch-icon.png', 'd3-2026/apple-touch-icon.png'),
+        .replace('og.jpg', f'{first}/og.jpg').replace('icon.svg', f'{first}/icon.svg')
+        .replace('favicon-32.png', f'{first}/favicon-32.png').replace('apple-touch-icon.png', f'{first}/apple-touch-icon.png'),
         encoding='utf-8')
 
 
@@ -86,4 +86,4 @@ if __name__ == '__main__':
     for d in dirs:
         if not only or d['id'] in only:
             build_dir(d)
-    build_root()
+    build_root(dirs[0]['id'])

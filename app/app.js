@@ -36,6 +36,7 @@ const mapsUrl = (addr, city) => {
   const q = city && !addr.includes(city) ? `${addr}, ${city}` : addr;
   return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q);
 };
+const classLabel = t => (t || '').startsWith('כיתה') ? t : `כיתה ${t || ''}`;
 const fullName = k => `${k.first || ''} ${k.last || ''}`.trim();
 const byName = (a, b) => (a.last || '').localeCompare(b.last || '', 'he') || (a.first || '').localeCompare(b.first || '', 'he');
 const ROLE_HE = { admin: 'מנהל/ת', parent: 'הורה', viewer: 'צפייה' };
@@ -106,7 +107,7 @@ const clearSubs = () => { st.unsub.forEach(u => u()); st.unsub = []; };
 
 function applyTheme() {
   document.documentElement.dataset.color = st.dir?.color || 'sky';
-  if (st.dir) document.title = `דף קשר · ${st.dir.title}`;
+  if (st.dir) document.title = `דף קשר · ${classLabel(st.dir.title)}`;
 }
 
 // ---------------- boot ----------------
@@ -186,7 +187,7 @@ const shell = (inner, wide = false) => `${st.dir?.doodles !== false ? doodlesHtm
 const titleBlock = () => st.dir ? `
   <header class="hero">
     <p class="year">${esc(st.dir.year || '')}</p>
-    <h1>${esc(st.dir.title)}</h1>
+    <h1>${esc(classLabel(st.dir.title))}</h1>
     ${st.dir.school ? `<p class="school">${esc(st.dir.school)}</p>` : ''}
   </header>` : `<header class="hero"><p class="year">Class Directory</p><h1>דפי קשר</h1></header>`;
 
@@ -574,8 +575,8 @@ const onAction = guard(async el => {
     fillAdmin();
   } else if (a === 'invite') {
     const url = dirUrl(st.dirId);
-    const text = `הצטרפו לדף הקשר של ${st.dir.title}: ${url}`;
-    if (navigator.share) { try { await navigator.share({ title: `דף קשר · ${st.dir.title}`, text, url }); return; } catch {} }
+    const text = `הצטרפו לדף הקשר של ${classLabel(st.dir.title)}: ${url}`;
+    if (navigator.share) { try { await navigator.share({ title: `דף קשר · ${classLabel(st.dir.title)}`, text, url }); return; } catch {} }
     try { await navigator.clipboard.writeText(url); toast('הקישור הועתק'); } catch { prompt('הקישור להזמנה:', url); }
   }
 });
