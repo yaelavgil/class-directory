@@ -222,7 +222,7 @@ async function homeView() {
         <label>שנת לימודים<input name="year" required value="${new Date().getFullYear()}-${new Date().getFullYear() + 1}"></label>
         <label>בית ספר<input name="school" placeholder="לא חובה"></label>
         <label>יישוב (לקישורי מפה)<input name="city" placeholder="בת חפר"></label>
-        <label class="span2">כתובת הדף<span class="slug" dir="ltr">${esc(dirUrl(''))}<input name="slug" required pattern="[a-z0-9-]+" placeholder="d3-2026"></span></label>
+        <label class="span2">כתובת הדף<span class="slug" dir="ltr">${esc(new URL(CD.base, location.href).href)}<input name="slug" required pattern="[a-z0-9-]+" placeholder="d3-2026"></span></label>
         <button class="btn span2">פתיחת הדף</button>
       </form>
     </section>` : ''}`);
