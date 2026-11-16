@@ -22,6 +22,18 @@ export async function toOriginal(src) {
   return c.toDataURL('image/jpeg', 0.82);
 }
 
+// Smaller copy of an already-square data URL, for thumbnails kept on a light document.
+export async function shrinkDataUrl(dataUrl, size, q = 0.72) {
+  const img = await loadImage(dataUrl);
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, size, size);
+  const s = Math.min(img.naturalWidth, img.naturalHeight);
+  ctx.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, size, size);
+  return c.toDataURL('image/jpeg', q);
+}
+
 // Opens the frame editor. Resolves { photo, original, crop } or null if cancelled.
 export function openCropper({ original, crop, title = 'מיקום התמונה' }) {
   return new Promise(resolve => {

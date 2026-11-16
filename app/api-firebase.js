@@ -9,6 +9,7 @@ import {
   onSnapshot, writeBatch, serverTimestamp, arrayUnion, arrayRemove, getDocs,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { FIREBASE_CONFIG } from './config.js';
+import { PHOTO_SLOTS, slotField } from './slots.js';
 
 const app = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(app);
@@ -148,6 +149,8 @@ export const api = {
     const b = writeBatch(db);
     b.delete(doc(db, 'dirs', id, 'kids', kidId));
     b.delete(doc(db, 'dirs', id, 'photos', kidId));
+    // Deleting a document leaves its subcollections behind, so the extra photo slots go explicitly.
+    for (const s of PHOTO_SLOTS) b.delete(doc(db, 'dirs', id, 'kids', kidId, 'assets', s.slot));
     return b.commit();
   },
 
@@ -164,6 +167,28 @@ export const api = {
     } else {
       b.update(doc(db, 'dirs', id, 'kids', kidId), { photo: res.photo, updatedAt: serverTimestamp(), updatedBy: me.email });
       b.set(doc(db, 'dirs', id, 'photos', kidId), { original: res.original, crop: res.crop || null, at: serverTimestamp(), by: me.email });
+    }
+    await b.commit();
+  },
+
+  // Extra photo slots (baby, grade 1, …). One document per slot under the kid, since a Firestore
+  // document caps at 1MB and several 1200px originals do not fit together. The kid document keeps
+  // only the small thumbnail, so loading the directory stays cheap.
+  async getAsset(id, kidId, slot) {
+    const s = await getDoc(doc(db, 'dirs', id, 'kids', kidId, 'assets', slot));
+    return s.exists() ? s.data() : null;
+  },
+  async saveAsset(id, kidId, slot, res, me) {
+    const field = slotField(slot);
+    if (!field) throw new Error('unknown slot: ' + slot);
+    const b = writeBatch(db);
+    const ref = doc(db, 'dirs', id, 'kids', kidId, 'assets', slot);
+    if (res.remove) {
+      b.update(doc(db, 'dirs', id, 'kids', kidId), { [field]: '', updatedAt: serverTimestamp(), updatedBy: me.email });
+      b.delete(ref);
+    } else {
+      b.update(doc(db, 'dirs', id, 'kids', kidId), { [field]: res.thumb, updatedAt: serverTimestamp(), updatedBy: me.email });
+      b.set(ref, { photo: res.photo, original: res.original, crop: res.crop || null, at: serverTimestamp(), by: me.email });
     }
     await b.commit();
   },

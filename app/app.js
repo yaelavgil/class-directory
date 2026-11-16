@@ -2,13 +2,23 @@
 const CD = window.CD || { dir: null, base: './' };
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
+// Modules app.js owns are loaded with the same ?v= that the page gave app.js, so a deploy swaps
+// the whole app at once instead of pairing a new app.js with a cached photo.js.
+// config.js and slots.js stay unversioned, because the backends import them statically too and
+// one shared copy is what we want.
+const V = new URL(import.meta.url).search;
+const mod = p => import(p + V);
+
 const cfg = await import('./config.js').catch(() => ({}));
 const useMock = DEMO || !cfg.FIREBASE_CONFIG;
-const { api } = useMock ? await import('./api-mock.js') : await import('./api-firebase.js');
+const { api } = await mod(useMock ? './api-mock.js' : './api-firebase.js');
 let mock = null;
-if (useMock) { mock = await import('./api-mock.js'); await mock.seedMock(); }
+const DEMO_DIR = CD.dir || params.get('d') || 'd3-2026';
+if (useMock) { mock = await mod('./api-mock.js'); await mock.seedMock(DEMO_DIR); }
 
-import { openViewer, openCropper, pickImage } from './photo.js';
+const { openViewer, openCropper, pickImage, shrinkDataUrl } = await mod('./photo.js');
+const { wireTextFields, cleanTextFields, sanitizeText } = await mod('./text.js');
+import { PHOTO_SLOTS, THUMB } from './slots.js';
 
 // ---------------- helpers ----------------
 const $ = (s, el = document) => el.querySelector(s);
@@ -41,6 +51,20 @@ const fullName = k => `${k.first || ''} ${k.last || ''}`.trim();
 const byName = (a, b) => (a.last || '').localeCompare(b.last || '', 'he') || (a.first || '').localeCompare(b.first || '', 'he');
 const ROLE_HE = { admin: 'מנהל/ת', parent: 'הורה', viewer: 'צפייה' };
 const COLORS = { sky: 'תכלת', pink: 'ורוד', mint: 'מנטה', sand: 'חול', lilac: 'לילך' };
+// Card fields a directory can switch off. Every one defaults to on, including for directories
+// that were saved before the field existed.
+const FIELD_DEFS = [
+  ['photo', 'תמונה'],
+  ['birth', 'יום הולדת'],
+  ['address', 'כתובת'],
+  ['kidPhone', 'הנייד של הילד/ה'],
+  ['bookName', 'השם המלא לכתיבה מדויקת'],
+  ['gender', 'בן / בת'],
+  ['memories', 'תמונת תינוקות ותמונה מכיתה א׳'],
+];
+const FIELD_DEFAULTS = Object.fromEntries(FIELD_DEFS.map(([k]) => [k, true]));
+const GENDERS = [['f', 'בת'], ['m', 'בן'], ['x', 'אחר']];
+const BOOKNAME_MAX = 40;
 const toast = msg => {
   const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg;
   (document.querySelector('dialog[open]') || document.body).append(t); setTimeout(() => t.remove(), 2600);
@@ -101,7 +125,7 @@ const st = {
 };
 const isAdmin = () => st.member?.role === 'admin';
 const canEdit = k => isAdmin() || (st.user && (k.parentEmails || []).includes(st.user.email));
-const fields = () => ({ birth: true, address: true, kidPhone: true, photo: true, ...(st.dir?.settings?.fields || {}) });
+const fields = () => ({ ...FIELD_DEFAULTS, ...(st.dir?.settings?.fields || {}) });
 const liveKids = () => st.kids.filter(k => !k.deleted).sort(byName);
 const clearSubs = () => { st.unsub.forEach(u => u()); st.unsub = []; };
 
@@ -121,7 +145,7 @@ if (mock) {
     bar.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === e.target));
     mock.setPersona(k);
   });
-  if (!st.dirId) st.dirId = 'd3-2026';
+  if (!st.dirId) st.dirId = DEMO_DIR;
 }
 
 await api.completeEmailLink(async () => prompt('כדי לסיים את הכניסה, הקלידו שוב את כתובת המייל:')).catch(err => toast('הקישור לא תקין או שפג תוקפו'));
@@ -336,6 +360,7 @@ function contactSheet(k) {
       <a class="cbtn wa" href="https://wa.me/${intl(phone)}" target="_blank" rel="noopener">${I.wa}<span>וואטסאפ</span></a>
     </div>` : '';
   const parents = (k.parents || []).filter(p => p.phone || p.name);
+  const shots = f.memories ? PHOTO_SLOTS.filter(s => k[s.field]) : [];
   const d = openDialog(`
     <div class="sh-head">
       ${f.photo ? `<button class="sh-photo" data-act="photo" data-id="${k.id}" aria-label="הגדלת התמונה">${k.photo ? `<img src="${esc(k.photo)}" alt="">` : `<span class="initials">${esc((k.first || '?')[0])}</span>`}</button>` : ''}
@@ -345,6 +370,8 @@ function contactSheet(k) {
     ${f.kidPhone && k.kidPhone ? `<section class="cgroup"><h3>הנייד של ${esc(k.first)}</h3>${pr(k.first, k.kidPhone)}</section>` : ''}
     ${parents.length ? `<section class="cgroup"><h3>הורים</h3>${parents.map(p => pr([p.role, p.name].filter(Boolean).join(' '), p.phone) || `<div class="crow"><div class="cinfo"><span class="clabel">${esc([p.role, p.name].filter(Boolean).join(' '))}</span></div></div>`).join('')}</section>` : ''}
     ${f.address && k.address ? `<section class="cgroup"><h3>כתובת</h3><a class="caddr" href="${mapsUrl(k.address, st.dir.city)}" target="_blank" rel="noopener">${I.house}<span>${esc(k.address)}</span><em>פתיחה במפות ›</em></a></section>` : ''}
+    ${shots.length ? `<section class="cgroup"><h3>תמונות משנים קודמות</h3><div class="shots">${shots.map(s => `
+      <div class="shot"><button data-act="slotview" data-id="${k.id}" data-slot="${s.slot}" aria-label="${esc(s.label)} של ${esc(fullName(k))}"><img src="${esc(k[s.field])}" alt=""></button><span>${esc(s.short)}</span></div>`).join('')}</div></section>` : ''}
     ${canEdit(k) ? `<button class="btn ghost wide" data-act="edit" data-id="${k.id}">${I.edit} עריכת הפרטים</button>` : ''}
   `, 'sheet');
   return d;
@@ -377,14 +404,25 @@ function openDialog(html, cls = '') {
   document.body.append(d);
   d.addEventListener('close', () => d.remove());
   d.addEventListener('click', e => { if (e.target === d) d.close(); });
+  wireTextFields(d);   // every [data-maxlen] field gets its counter and print filtering
   d.showModal();
   return d;
 }
 
+// One optional photo slot in the edit form. The thumbnail on the kid document is what it shows.
+const slotBox = (s, k) => `<div class="slot" data-slot="${s.slot}">
+  <button type="button" class="photo" data-act="dlgslot" data-slot="${s.slot}" aria-label="${esc(s.label)}">
+    ${k[s.field] ? `<img src="${esc(k[s.field])}" alt="">` : `<span class="initials">+</span>`}</button>
+  <b>${esc(s.label)}</b>
+  <button type="button" class="link danger" data-act="delslot" data-slot="${s.slot}" ${k[s.field] ? '' : 'hidden'}>הסרה</button>
+</div>`;
+
 function kidDialog(k) {
   const f = fields();
   const isNew = !k;
-  k = k || { first: '', last: '', birth: '', address: '', kidPhone: '', parents: [{ role: 'אמא', name: '', phone: '' }, { role: 'אבא', name: '', phone: '' }], parentEmails: [] };
+  k = k || { first: '', last: '', bookName: '', gender: '', birth: '', address: '', kidPhone: '', parents: [{ role: 'אמא', name: '', phone: '' }, { role: 'אבא', name: '', phone: '' }], parentEmails: [] };
+  // Offered pre-filled from the name, for the parent to confirm or correct.
+  const bookName = k.bookName || fullName(k);
   const pRow = (p = {}) => `<div class="prow">
     <select name="prole">${['אמא', 'אבא', ''].map(r => `<option value="${r}" ${p.role === r ? 'selected' : ''}>${r || '—'}</option>`).join('')}</select>
     <input name="pname" placeholder="שם" value="${esc(p.name || '')}">
@@ -398,12 +436,21 @@ function kidDialog(k) {
         ${k.photo ? `<button type="button" class="link danger" data-act="delphoto">הסרת התמונה</button>` : ''}</div>
         <input type="hidden" name="photo" value="${esc(k.photo || '')}"></div>` : ''}
       <div class="grid2">
-        <label>שם פרטי<input name="first" required value="${esc(k.first)}"></label>
-        <label>שם משפחה<input name="last" value="${esc(k.last)}"></label>
+        <label>שם פרטי<input name="first" required value="${esc(k.first)}" data-maxlen="24"></label>
+        <label>שם משפחה<input name="last" value="${esc(k.last)}" data-maxlen="24"></label>
+        ${f.bookName ? `<label class="span2">השם המלא, בדיוק כפי שצריך להיכתב
+          <input name="bookName" value="${esc(bookName)}" data-maxlen="${BOOKNAME_MAX}" ${k.bookName ? '' : 'data-mirror="1"'}>
+          <small class="hint">כך הוא ייכתב בכל דף מודפס שיֵצא מהכיתה. ברירת המחדל היא השם הפרטי ושם המשפחה.</small></label>` : ''}
         ${f.birth ? `<label>תאריך לידה<input type="date" name="birth" value="${esc(k.birth)}"></label>` : ''}
+        ${f.gender ? `<label>בן / בת<select name="gender"><option value="">—</option>${GENDERS.map(([v, l]) => `<option value="${v}" ${k.gender === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : ''}
         ${f.kidPhone ? `<label>הנייד של הילד/ה<input type="tel" name="kidPhone" value="${esc(k.kidPhone)}" dir="ltr" placeholder="אם יש"></label>` : ''}
-        ${f.address ? `<label class="span2">כתובת<input name="address" value="${esc(k.address)}" placeholder="רחוב ומספר, יישוב"></label>` : ''}
+        ${f.address ? `<label class="span2">כתובת<input name="address" value="${esc(k.address)}" placeholder="רחוב ומספר, יישוב" data-maxlen="60"></label>` : ''}
       </div>
+      ${f.memories ? `<fieldset class="memories">
+        <legend>תמונות משנים קודמות — לא חובה</legend>
+        <p class="hint">נשמור אותן לספר המחזור בכיתה ו׳.</p>
+        <div class="slots">${PHOTO_SLOTS.map(s => slotBox(s, k)).join('')}</div>
+      </fieldset>` : ''}
       <p class="lbl">הורים</p>
       <div class="prows">${(k.parents || []).map(pRow).join('')}</div>
       <button type="button" class="link" data-act="addprow">+ הוספת הורה</button>
@@ -481,7 +528,7 @@ function fillAdmin(d = $('dialog.admin-dlg')) {
         <label class="inline"><input type="radio" name="joinMode" value="admin" ${s.joinMode === 'admin' ? 'checked' : ''}> רק מנהלים מוסיפים</label>
       </fieldset>
       <fieldset class="span2"><legend>שדות בכרטיס</legend>
-        ${[['photo', 'תמונה'], ['birth', 'יום הולדת'], ['address', 'כתובת'], ['kidPhone', 'הנייד של הילד/ה']].map(([k, l]) => `<label class="inline"><input type="checkbox" name="f_${k}" ${f[k] ? 'checked' : ''}> ${l}</label>`).join('')}
+        ${FIELD_DEFS.map(([k, l]) => `<label class="inline"><input type="checkbox" name="f_${k}" ${f[k] ? 'checked' : ''}> ${l}</label>`).join('')}
       </fieldset>
       <button class="btn span2">שמירת הגדרות</button>
     </form>`;
@@ -491,6 +538,7 @@ function fillAdmin(d = $('dialog.admin-dlg')) {
       <button class="btn ghost" data-act="restore" data-id="${k.id}">שחזור</button><button class="link danger" data-act="harddel" data-id="${k.id}">מחיקה לצמיתות</button></li>`).join('')}</ul>`
       : `<p class="muted">הסל ריק.</p>`;
   }
+  wireTextFields(body);
 }
 
 // ---------------- events ----------------
@@ -500,11 +548,17 @@ const guard = fn => async (...a) => {
 };
 
 document.addEventListener('input', e => {
-  if (e.target.dataset.act === 'search') {
-    st.q = e.target.value;
-    const pos = e.target.selectionStart;
+  const el = e.target;
+  if (el.dataset.act === 'search') {
+    st.q = el.value;
+    const pos = el.selectionStart;
     render();
     const s = $('.search'); s.focus(); s.setSelectionRange(pos, pos);
+  } else if (el.name === 'bookName') {
+    delete el.dataset.mirror;   // the parent took it over; stop following the name fields
+  } else if (el.name === 'first' || el.name === 'last') {
+    const f = el.closest('form[data-form="kid"]'), bn = f?.elements.bookName;
+    if (bn?.dataset.mirror) { bn.value = `${f.elements.first.value} ${f.elements.last.value}`.trim(); bn._paintText?.(); }
   }
 });
 
@@ -553,6 +607,45 @@ const onAction = guard(async el => {
     if (!res) return;
     f._photo = res; f.photo.value = res.photo;
     $('.photoedit .photo', f).innerHTML = `<img src="${res.photo}" alt="">`;
+  }
+  // Optional photo slots: the same editor, saved to their own document per slot.
+  else if (a === 'dlgslot') {
+    const f = el.closest('form'), slot = el.dataset.slot;
+    const def = PHOTO_SLOTS.find(s => s.slot === slot);
+    const pend = f._slots?.[slot];
+    let src = pend?.original ? { original: pend.original, crop: pend.crop } : null;
+    if (!src && !pend && f.dataset.id) {
+      const asset = await api.getAsset(st.dirId, f.dataset.id, slot).catch(() => null);
+      if (asset?.original) src = { original: asset.original, crop: asset.crop };
+    }
+    if (!src) { const o = await pickImage(); if (!o) return; src = { original: o, crop: null }; }
+    const res = await openCropper({ ...src, title: def.label });
+    if (!res) return;
+    res.thumb = await shrinkDataUrl(res.photo, THUMB);
+    (f._slots ||= {})[slot] = res;
+    const box = f.querySelector(`.slot[data-slot="${slot}"]`);
+    $('.photo', box).innerHTML = `<img src="${res.thumb}" alt="">`;
+    $('[data-act=delslot]', box).hidden = false;
+  } else if (a === 'delslot') {
+    const f = el.closest('form'), slot = el.dataset.slot;
+    (f._slots ||= {})[slot] = { remove: true };
+    const box = f.querySelector(`.slot[data-slot="${slot}"]`);
+    $('.photo', box).innerHTML = `<span class="initials">+</span>`;
+    el.hidden = true;
+  } else if (a === 'slotview') {
+    const slot = el.dataset.slot, k = st.kids.find(x => x.id === id);
+    const def = PHOTO_SLOTS.find(s => s.slot === slot);
+    el.closest('dialog.sheet')?.close();
+    const asset = await api.getAsset(st.dirId, id, slot).catch(() => null);
+    openViewer({
+      name: esc(`${fullName(k)} · ${def.short}`), photo: asset?.photo || k[def.field], canEdit: canEdit(k),
+      getOriginal: async () => asset?.original ? { original: asset.original, crop: asset.crop } : null,
+      onSave: async res => {
+        if (!res.remove) res.thumb = await shrinkDataUrl(res.photo, THUMB);
+        await api.saveAsset(st.dirId, id, slot, res, st.user);
+        toast(res.remove ? 'התמונה הוסרה' : 'התמונה נשמרה ✓');
+      },
+    });
   }
   else if (a === 'softdel') {
     const k = st.kids.find(x => x.id === id);
@@ -609,20 +702,24 @@ document.addEventListener('submit', e => {
       if (role === 'parent' && !kids.length && !newKid) { toast('בחרו ילד/ה מהרשימה, או כתבו שם'); return; }
       await api.requestJoin(st.dirId, st.user, { role, kids, newKid, note: v('note') });
     } else if (kind === 'kid') {
-      const parents = [...f.querySelectorAll('.prow')].map(r => ({ role: r.querySelector('[name=prole]').value, name: r.querySelector('[name=pname]').value.trim(), phone: r.querySelector('[name=pphone]').value.trim() })).filter(p => p.name || p.phone);
+      // Print-clean every limited field before it is stored, not after it reaches a layout.
+      if (cleanTextFields(f)) { toast('תווים שהדפוס לא מכיר הוסרו — בדקו ושמרו שוב'); return; }
+      const parents = [...f.querySelectorAll('.prow')].map(r => ({ role: r.querySelector('[name=prole]').value, name: sanitizeText(r.querySelector('[name=pname]').value), phone: r.querySelector('[name=pphone]').value.trim() })).filter(p => p.name || p.phone);
       const bad = parents.find(p => p.phone && !phoneOk(p.phone));
       if (bad && !confirm(`המספר של ${bad.name || 'ההורה'} (${bad.phone}) לא נראה תקין. לשמור בכל זאת?`)) return;
       const data = { first: v('first'), last: v('last'), parents };
-      for (const n of ['birth', 'address', 'kidPhone']) if (f.elements[n]) data[n] = v(n);
+      for (const n of ['birth', 'address', 'kidPhone', 'bookName', 'gender']) if (f.elements[n]) data[n] = v(n);
+      if (f.elements.bookName && !data.bookName) data.bookName = `${data.first} ${data.last}`.trim();
       if (isAdmin() && f.elements.parentEmails) data.parentEmails = v('parentEmails').split(/[,\s]+/).map(s => s.toLowerCase()).filter(Boolean);
       let kidId = f.dataset.id;
       if (kidId) await api.saveKid(st.dirId, kidId, data, st.user);
       else {
         if (!isAdmin()) data.parentEmails = [st.user.email];
         kidId = api.newKidId(st.dirId);
-        await api.createKid(st.dirId, kidId, { parentEmails: [], photo: '', ...data, deleted: false }, st.user);
+        await api.createKid(st.dirId, kidId, { parentEmails: [], photo: '', babyPhoto: '', grade1Photo: '', ...data, deleted: false }, st.user);
       }
       if (f._photo) await api.savePhoto(st.dirId, kidId, f._photo, st.user);
+      for (const [slot, res] of Object.entries(f._slots || {})) await api.saveAsset(st.dirId, kidId, slot, res, st.user);
       f.closest('dialog').close(); toast('נשמר ✓');
     } else if (kind === 'approve') {
       const r = st.requests.find(x => x.id === f.dataset.id);
@@ -631,7 +728,7 @@ document.addEventListener('submit', e => {
       await api.approve(st.dirId, r, {
         role: f.role.value, kids,
         newKidId: mk ? api.newKidId(st.dirId) : null,
-        newKid: mk ? { first: r.newKid.first, last: r.newKid.last, birth: '', address: '', kidPhone: '', photo: '', parents: [], deleted: false } : null,
+        newKid: mk ? { first: r.newKid.first, last: r.newKid.last, bookName: `${r.newKid.first} ${r.newKid.last}`.trim(), gender: '', birth: '', address: '', kidPhone: '', photo: '', babyPhoto: '', grade1Photo: '', parents: [], deleted: false } : null,
       }, st.user);
       toast(`${r.name || r.email} אושר/ה ✓`);
       fillAdmin();
@@ -643,12 +740,12 @@ document.addEventListener('submit', e => {
     } else if (kind === 'roster') {
       const have = new Set(liveKids().map(fullName));
       const rows = v('names').split('\n').map(s => s.trim().replace(/\s+/g, ' ')).filter(Boolean).filter(s => !have.has(s));
-      const kids = rows.map(s => { const [first, ...rest] = s.split(' '); return { first, last: rest.join(' '), birth: '', address: '', kidPhone: '', photo: '', parents: [], parentEmails: [], deleted: false }; });
+      const kids = rows.map(s => { const [first, ...rest] = s.split(' '); return { first, last: rest.join(' '), bookName: s, gender: '', birth: '', address: '', kidPhone: '', photo: '', babyPhoto: '', grade1Photo: '', parents: [], parentEmails: [], deleted: false }; });
       if (!kids.length) { toast('אין שמות חדשים להוספה'); return; }
       await api.addKidsBulk(st.dirId, kids, st.user);
       toast(`נוספו ${kids.length} ילדים`); fillAdmin();
     } else if (kind === 'settings') {
-      const fl = {}; for (const k of ['photo', 'birth', 'address', 'kidPhone']) fl[k] = f.elements['f_' + k].checked;
+      const fl = {}; for (const [k] of FIELD_DEFS) fl[k] = f.elements['f_' + k].checked;
       await api.updateDir(st.dirId, {
         title: v('title'), year: v('year'), school: v('school'), city: v('city'), color: f.color.value, doodles: f.doodles.checked,
         settings: { joinMode: f.joinMode.value, fields: fl },

@@ -1,5 +1,7 @@
 // In-memory backend for local preview (?demo). Same interface as api-firebase.js.
 // A persona switcher picks who is "signed in", so every role can be tried without real accounts.
+import { PHOTO_SLOTS, slotField } from './slots.js';
+
 const subs = new Set();
 const fire = () => subs.forEach(f => f());
 const sub = (fn) => { const f = () => fn(); subs.add(f); queueMicrotask(f); return () => subs.delete(f); };
@@ -9,29 +11,35 @@ let seq = 100;
 export const PERSONAS = [
   { key: 'out', label: 'לא מחובר/ת', user: null },
   { key: 'admin', label: 'מנהלת', user: { uid: 'u-admin', email: 'admin@example.com', name: 'מנהלת לדוגמה', photo: '' } },
-  { key: 'parent', label: 'הורה של נגה', user: { uid: 'u-par', email: 'parent@example.com', name: 'הורה לדוגמה', photo: '' } },
+  { key: 'parent', label: 'הורה (כרטיס אחד)', user: { uid: 'u-par', email: 'parent@example.com', name: 'הורה לדוגמה', photo: '' } },
   { key: 'viewer', label: 'ילד/ה (צפייה)', user: { uid: 'u-kid', email: 'kid@example.com', name: 'ילד/ה לדוגמה', photo: '' } },
   { key: 'new', label: 'הורה חדש/ה', user: { uid: 'u-new', email: 'new@example.com', name: 'הורה חדש/ה', photo: '' } },
 ];
 
-const S = { user: null, dirs: {}, members: {}, kids: {}, requests: {}, roster: {}, photos: {} };
+const S = { user: null, dirs: {}, members: {}, kids: {}, requests: {}, roster: {}, photos: {}, assets: {} };
 
-export async function seedMock() {
-  const kids = await fetch('../seed.local.json').then(r => r.json()).catch(() => []);
-  const d = 'd3-2026';
+// id: the directory the page asks for, so ?demo works on a class page and not only at the root.
+export async function seedMock(id = 'd3-2026') {
+  // The real roster (seed.local.json) is never published, so the demo falls back to fictional names
+  // — which is what the published ?demo link runs on.
+  const load = u => fetch(new URL(u, import.meta.url)).then(r => r.ok ? r.json() : Promise.reject()).catch(() => null);
+  const kids = (await load('../seed.local.json')) || (await load('./demo-seed.json')) || [];
+  const d = id;
   S.dirs[d] = { id: d, title: 'כיתה ד3', year: '2026-2027', school: 'בית ספר שדות', city: 'בת חפר', color: 'sky', doodles: true,
-    settings: { joinMode: 'roster', fields: { birth: true, address: true, kidPhone: true, photo: true } }, createdBy: 'admin@example.com' };
+    settings: { joinMode: 'roster', fields: { birth: true, address: true, kidPhone: true, photo: true, memories: true, bookName: true, gender: true } },
+    createdBy: 'admin@example.com' };
   S.kids[d] = {};
   for (const k of kids) S.kids[d][k.id] = { ...k };
-  S.kids[d].k03.parentEmails = ['parent@example.com'];
-  S.kids[d].k01.parentEmails = ['admin@example.com'];
+  const ids = kids.map(k => k.id);
+  if (ids[2]) S.kids[d][ids[2]].parentEmails = ['parent@example.com'];
+  if (ids[0]) S.kids[d][ids[0]].parentEmails = ['admin@example.com'];
   S.members[d] = {
-    'admin@example.com': { email: 'admin@example.com', name: 'מנהלת לדוגמה', role: 'admin', kids: ['k01'] },
-    'parent@example.com': { email: 'parent@example.com', name: 'הורה לדוגמה', role: 'parent', kids: ['k03'] },
+    'admin@example.com': { email: 'admin@example.com', name: 'מנהלת לדוגמה', role: 'admin', kids: ids.slice(0, 1) },
+    'parent@example.com': { email: 'parent@example.com', name: 'הורה לדוגמה', role: 'parent', kids: ids.slice(2, 3) },
     'kid@example.com': { email: 'kid@example.com', name: 'ילד/ה לדוגמה', role: 'viewer', kids: [] },
   };
   S.requests[d] = {
-    'u-x1': { id: 'u-x1', uid: 'u-x1', email: 'req1@example.com', name: 'בקשה לדוגמה', role: 'parent', kids: ['k02'], note: 'אבא של עומר (לדוגמה)' },
+    'u-x1': { id: 'u-x1', uid: 'u-x1', email: 'req1@example.com', name: 'בקשה לדוגמה', role: 'parent', kids: ids.slice(1, 2), note: 'הורה של הילד/ה השני ברשימה (לדוגמה)' },
     'u-x2': { id: 'u-x2', uid: 'u-x2', email: 'req2@example.com', name: 'בקשה נוספת', role: 'parent', kids: [], newKid: { first: 'נטע', last: 'כהן' }, note: 'הצטרפה השנה' },
   };
   S.roster[d] = kids.map(k => ({ id: k.id, label: `${k.first} ${k.last}` }));
@@ -116,11 +124,30 @@ export const api = {
     for (const k of kids) { const kidId = k.id || 'k' + (++seq); S.kids[id][kidId] = { parentEmails: [], ...clone(k), id: kidId }; }
     fire();
   },
-  async hardDeleteKid(id, kidId) { delete S.kids[id][kidId]; delete S.photos[id + kidId]; fire(); },
+  async hardDeleteKid(id, kidId) {
+    delete S.kids[id][kidId]; delete S.photos[id + kidId];
+    for (const s of PHOTO_SLOTS) delete S.assets[id + kidId + s.slot];
+    fire();
+  },
   async getPhoto(id, kidId) { return S.photos[id + kidId] ? clone(S.photos[id + kidId]) : null; },
   async savePhoto(id, kidId, res) {
     if (res.remove) { S.kids[id][kidId].photo = ''; delete S.photos[id + kidId]; }
     else { S.kids[id][kidId].photo = res.photo; S.photos[id + kidId] = { original: res.original, crop: res.crop || null }; }
+    fire();
+  },
+
+  async getAsset(id, kidId, slot) {
+    const a = S.assets[id + kidId + slot];
+    return a ? clone(a) : null;
+  },
+  async saveAsset(id, kidId, slot, res) {
+    const field = slotField(slot);
+    if (!field) throw new Error('unknown slot: ' + slot);
+    if (res.remove) { S.kids[id][kidId][field] = ''; delete S.assets[id + kidId + slot]; }
+    else {
+      S.kids[id][kidId][field] = res.thumb;
+      S.assets[id + kidId + slot] = { photo: res.photo, original: res.original, crop: res.crop || null };
+    }
     fire();
   },
 };
